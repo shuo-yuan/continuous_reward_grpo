@@ -30,8 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Clean apt cache
     && rm -rf /var/lib/apt/lists/*
 
-# --- 2. Update npm to latest version ---
-RUN npm install -g npm@latest
+# --- 2. Update npm (pinned to v10: npm@latest now requires Node >= 22, image ships Node 20) ---
+RUN npm install -g npm@10
 
 # --- 3. Install go-judge (auto-detect architecture) ---
 # Use pinned version with fallback to avoid GitHub API rate limits
@@ -39,12 +39,13 @@ ARG GO_JUDGE_VERSION=v1.11.1
 RUN set -eux; \
   arch="$(uname -m)"; \
   case "$arch" in \
-    x86_64)  goarch="amd64" ;; \
+    x86_64)  goarch="amd64v2" ;; \
     aarch64) goarch="arm64" ;; \
     *) echo "Unsupported arch: $arch" && exit 1 ;; \
   esac; \
   # Try direct download first (no API call), fallback to API
-  url="https://github.com/criyle/go-judge/releases/download/${GO_JUDGE_VERSION}/go-judge_linux_${goarch}.tar.gz"; \
+  # Release assets are named go-judge_<version>_linux_<arch>.tar.gz (e.g. go-judge_1.11.1_linux_amd64v2.tar.gz)
+  url="https://github.com/criyle/go-judge/releases/download/${GO_JUDGE_VERSION}/go-judge_${GO_JUDGE_VERSION#v}_linux_${goarch}.tar.gz"; \
   echo "Downloading go-judge ${GO_JUDGE_VERSION} for $arch"; \
   if ! curl -fsSL "$url" | tar -xz -C /usr/local/bin go-judge; then \
     echo "Direct download failed, trying GitHub API..."; \

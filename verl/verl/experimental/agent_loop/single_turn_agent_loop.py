@@ -59,7 +59,9 @@ class SingleTurnAgentLoop(AgentLoopBase):
             output = await self.server_manager.generate(
                 request_id=uuid4().hex,
                 prompt_ids=prompt_ids,
-                sampling_params=sampling_params,
+                # Stop at response_length: the response is cut to it below anyway, and the server's default
+                # budget (response_length + prompt_length - len(prompt_ids)) would generate past it for nothing.
+                sampling_params={**sampling_params, "max_tokens": self.response_length},
                 image_data=images,
                 video_data=videos,
             )

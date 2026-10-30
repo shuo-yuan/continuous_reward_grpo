@@ -41,16 +41,33 @@ def main() -> None:
     parser.add_argument("--val-ratio", type=float, default=0.1, help="Fraction for validation")
     parser.add_argument("--full-for-both", action="store_true", help="Use all problems for both train and val (creates full.parquet)")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--ids",
+        type=Path,
+        default=None,
+        help="JSON manifest restricting the problem set, e.g. data/sample_lists/frontiercs_val_172.json "
+        "(uses its 'paper_172.ids'; a plain list of ids also works)",
+    )
     args = parser.parse_args()
 
     if args.full_for_both:
         args.val_ratio = 0.0
+
+    keep = None
+    if args.ids is not None:
+        import json
+
+        manifest = json.loads(args.ids.read_text())
+        ids = manifest["paper_172"]["ids"] if isinstance(manifest, dict) else manifest
+        keep = {str(i) for i in ids}
 
     rows = []
     for pid_dir in sorted(PROBLEMS_DIR.iterdir()):
         if not pid_dir.is_dir():
             continue
         if not pid_dir.name.isdigit():
+            continue
+        if keep is not None and pid_dir.name not in keep:
             continue
         stmt = pid_dir / "statement.txt"
         if not stmt.exists():

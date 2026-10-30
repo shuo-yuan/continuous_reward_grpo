@@ -300,7 +300,13 @@ def compute_grpo_outcome_advantage(
         Returns: `(torch.Tensor)`
             shape is (bs, response_length)
     """
-    scores = token_level_rewards.sum(dim=-1)
+    out_dtype = token_level_rewards.dtype
+    # noisy_grpo fix (2026-10-21): group statistics in float64. In float32, a group whose
+    # rollouts all got the same non-dyadic score (e.g. 8 x 55.8) gets a mean that is 1 ulp
+    # off and a std of ~4e-6, so every rollout received a spurious +-0.75 advantage instead
+    # of 0 (seen in 8 of 800 groups of the vanilla baseline). Summing up to 2**29 equal
+    # float32 values is exact in float64, so flat groups now get exactly 0.
+    scores = token_level_rewards.sum(dim=-1).to(torch.float64)
 
     id2score = defaultdict(list)
     id2mean = {}
@@ -312,8 +318,8 @@ def compute_grpo_outcome_advantage(
             id2score[index[i]].append(scores[i])
         for idx in id2score:
             if len(id2score[idx]) == 1:
-                id2mean[idx] = torch.tensor(0.0)
-                id2std[idx] = torch.tensor(1.0)
+                id2mean[idx] = torch.tensor(0.0, dtype=torch.float64, device=scores.device)
+                id2std[idx] = torch.tensor(1.0, dtype=torch.float64, device=scores.device)
             elif len(id2score[idx]) > 1:
                 scores_tensor = torch.stack(id2score[idx])
                 id2mean[idx] = torch.mean(scores_tensor)
@@ -325,7 +331,7 @@ def compute_grpo_outcome_advantage(
                 scores[i] = (scores[i] - id2mean[index[i]]) / (id2std[index[i]] + epsilon)
             else:
                 scores[i] = scores[i] - id2mean[index[i]]
-        scores = scores.unsqueeze(-1) * response_mask
+        scores = scores.to(out_dtype).unsqueeze(-1) * response_mask
 
     return scores, scores
 

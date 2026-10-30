@@ -1,6 +1,7 @@
 #!/bin/bash
 # Run judge container without docker compose.
-# Usage: ./run_judge.sh
+# Usage: ./run_judge.sh      (env JUDGE_WORKERS / GJ_PARALLELISM, default 64: a Frontier-CS
+#        validation sends ~860 submissions at once and some jobs run for many minutes)
 # Stop: docker stop Competitive-Programming
 
 set -e
@@ -22,8 +23,8 @@ docker run -d \
   -p 8082:8082 \
   -e PORT=8082 \
   -e GJ_ADDR=http://127.0.0.1:5050 \
-  -e JUDGE_WORKERS=8 \
-  -e GJ_PARALLELISM=8 \
+  -e JUDGE_WORKERS=${JUDGE_WORKERS:-64} \
+  -e GJ_PARALLELISM=${GJ_PARALLELISM:-64} \
   -e SAVE_OUTPUTS=false \
   -v "$(pwd)/problems:/app/problems" \
   -v "$(pwd)/submissions:/app/submissions" \

@@ -20,6 +20,13 @@ set -x
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# ── Secrets (WANDB_API_KEY etc.) from git-ignored .env; xtrace off so keys aren't echoed ──
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    { set +x; } 2>/dev/null
+    set -a; source "$PROJECT_ROOT/.env"; set +a
+    set -x
+fi
+
 # ── Environment ──────────────────────────────────────────────────────────────
 if [ -f "$PROJECT_ROOT/.venv/bin/activate" ]; then
     source "$PROJECT_ROOT/.venv/bin/activate"
@@ -88,7 +95,10 @@ if [ "${FRESH_START:-0}" = "1" ]; then
     echo "[FRESH_START] Training will start from scratch (resume_mode=disable)."
 fi
 
-python -m verl.trainer.main_ppo \
+# TRAIN_ENTRY lets a wrapper entry point (e.g. scripts/main_ppo_plugins.py, which
+# registers custom advantage estimators) replace verl's main_ppo.
+TRAIN_ENTRY=${TRAIN_ENTRY:--m verl.trainer.main_ppo}
+python $TRAIN_ENTRY \
     algorithm.adv_estimator=grpo \
     data.train_files="$TRAIN_FILES" \
     data.val_files="$VAL_FILES" \

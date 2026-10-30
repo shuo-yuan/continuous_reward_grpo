@@ -15,9 +15,10 @@
 Metrics related to the PPO trainer.
 """
 
+import numbers
 from collections import defaultdict
 from functools import partial
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
@@ -414,6 +415,72 @@ def compute_variance_proxy_metrics(batch: DataProto, gradient_norm: float = None
         }
     )
 
+    return metrics
+
+
+# Reward-extra-info keys that are categorical codes: besides the mean, the fraction of each code is logged.
+# judge_status (verl/utils/reward_score/frontiercs.py): 1 judged, 0 no code block, -1/-2/-3 judge failures.
+REWARD_EXTRA_INFO_CATEGORICAL_KEYS: dict[str, tuple[int, ...]] = {"judge_status": (1, 0, -1, -2, -3)}
+
+
+def _finite_scalar_floats(values: Any) -> Optional[np.ndarray]:
+    """Return the finite real scalar entries of a per-sample column as float64.
+
+    None, strings, NaN/inf and non-scalar entries (lists, dicts, ...) are dropped. Returns None for a column
+    that is not one value per sample (e.g. a 2-D numeric array).
+    """
+    if isinstance(values, np.ndarray):
+        if values.ndim == 0:
+            values = values.reshape(1)
+        if values.ndim != 1:
+            return None
+        if values.dtype.kind in "biuf":
+            out = values.astype(np.float64)
+            return out[np.isfinite(out)]
+        seq = values.tolist() if values.dtype.kind != "O" else values
+    elif isinstance(values, (list, tuple)):
+        seq = values
+    else:
+        seq = [values]
+    out = np.array([float(v) for v in seq if isinstance(v, (numbers.Real, np.bool_))], dtype=np.float64)
+    return out[np.isfinite(out)]
+
+
+def compute_reward_extra_info_metrics(
+    reward_extra_infos_dict: Optional[dict[str, Any]],
+    prefix: str = "train-aux",
+    categorical_keys: Optional[dict[str, tuple[int, ...]]] = None,
+) -> dict[str, float]:
+    """Per-step metrics from the reward function's extra info of the training batch (read-only).
+
+    For every key whose per-sample values are numeric (None / non-numeric entries skipped, NaN-safe) logs
+    ``<prefix>/<key>/mean``. For categorical keys (default: ``judge_status``) additionally logs
+    ``<prefix>/<key>/frac_<code>``: the fraction of the numeric entries equal to each code; the expected codes
+    are always logged (0.0 when absent) and any other code present is added. Keys with no numeric entry are
+    omitted, so a reward function that returns a plain float (extra info ``{"acc": score}`` or ``{}``) is fine.
+    Never raises: a column that cannot be summarised is skipped.
+    """
+    if categorical_keys is None:
+        categorical_keys = REWARD_EXTRA_INFO_CATEGORICAL_KEYS
+    metrics: dict[str, float] = {}
+    try:
+        if not reward_extra_infos_dict:
+            return metrics
+        items = list(reward_extra_infos_dict.items())
+    except Exception:
+        return metrics
+    for key, values in items:
+        try:
+            vals = _finite_scalar_floats(values)
+            if vals is None or vals.size == 0:
+                continue
+            metrics[f"{prefix}/{key}/mean"] = float(vals.mean())
+            if key in categorical_keys:
+                codes = np.rint(vals).astype(np.int64)
+                for code in sorted(set(categorical_keys[key]) | set(codes.tolist()), reverse=True):
+                    metrics[f"{prefix}/{key}/frac_{code}"] = float(np.count_nonzero(codes == code)) / codes.size
+        except Exception:
+            continue
     return metrics
 
 

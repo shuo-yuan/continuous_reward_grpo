@@ -1,0 +1,17 @@
+# Runtime image for FrontierSmith training on hosts with an old glibc.
+#
+# vllm 0.20.0's compiled ops need glibc >= 2.34; Debian 11 hosts ship 2.31.
+# This image only supplies a newer userland (Ubuntu 22.04, glibc 2.35), a C
+# toolchain for Triton's JIT, and the CUDA 12.9 toolkit (matching torch's cu129
+# build) — vLLM JIT-compiles FlashInfer's GDN prefill kernel (Qwen3.5 linear
+# attention) and loads DeepGEMM with nvcc. Python and every package come from
+# the project's .venv, mounted from the host by scripts/run_in_container.sh.
+FROM nvidia/cuda:12.9.1-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        curl \
+        git \
+    && rm -rf /var/lib/apt/lists/*
