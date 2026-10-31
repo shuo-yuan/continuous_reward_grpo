@@ -43,6 +43,7 @@ The work has three phases. It is open-ended research, not a single pre-registere
   - then ask the user and wait.
 - **No fixed compute budget.** The user decides at each check-in. Check in after phase 1, and after
   each finished run in phases 2 and 3, with that run's row in the [Results log](#results-log).
+- **Unstable runs:** if a run leaves the normal ranges in [Run health](#run-health), stop and ask.
 - **Repeated failures:** if a run fails twice at the same point, or its supervisor gives up, stop.
   Do not start the next run and do not work around the failure. Report it and ask.
 - **Design questions go to the user.** Examples: changing anything on the fixed list below, tuning a
@@ -113,6 +114,9 @@ All three run with dynamic sampling and the same settings as every other run.
   three gaps.
 - **So:** gains under about 1.5 points will rarely pass. Aim for 2 points or more.
 - **No extra minimum gap:** passing the selection and the confirmation is what "clearly beats" means.
+- **Only stable runs count.** A run must stay within the normal ranges in [Run health](#run-health),
+  for example in grad norm and clip ratio. If it leaves them, its result is not compared until the
+  cause is understood, and this applies to baselines and schedules alike.
 
 **Also report:**
 - **Learning speed:** Avg@5 at steps 20–100, per training step and per generated rollout.
@@ -222,8 +226,20 @@ Notes on the rule:
 
 ## Dynamic sampling in every run
 
-Every run, in every phase, uses DAPO-style dynamic sampling (`scripts/dynamic_sampling.py`) so that early steps
-are not decided by a handful of rollouts:
+Every run, in every phase, uses DAPO-style dynamic sampling (`scripts/dynamic_sampling.py`).
+
+**Why: the clip-ratio problem in the finished runs.**
+- At the start, 83–94% of training rollouts were cut off at the 32k cap (`response_length/clip_ratio`):
+  steps 1–5 of the regular run, and steps 1–2 of the mean-quantized run. The base model rarely
+  finishes within 32k.
+- A cut-off rollout usually scores 0, so most groups were all zeros and got zero advantage. Each
+  update was decided by 7–25 rollouts.
+- Response length then collapsed, from about 30k to about 5k tokens within 2–3 steps, before growing
+  back to about 20k by step 40.
+
+**What dynamic sampling does about it:** it keeps sampling until 16 groups have a nonzero advantage,
+so even the earliest steps train on a full batch of groups that carry signal. Phase 1 has to show that
+it works (see [Run health](#run-health)). In detail:
 - **Which groups count.** After each generation round, only groups whose advantages are not all zero are kept. "All zero" is judged under each run's own reward: raw scores for GRPO, the 0/1 labels for the others.
 - **Topping up.** More batches are drawn from the training data stream until 16 such groups are collected. Each extra round is sized by `DS_BATCHES_PER_ROUND=auto`: enough whole batches for the current keep rate.
 - **Cap.** At most 6 generation batches per step. If still short, the batch is filled with groups whose advantages are all zero.
@@ -576,8 +592,38 @@ Phase 1 gives a rough picture, so there is no single deciding test.
 estimators for the continuous reward: the bias of GRPO's per-group std, and the length bias of the
 loss aggregation. It used an older setup (8 × 8 rollouts, 16k tokens).
 
+## Run health
+
+Every run has to be stable before its results count. The finished runs show what "normal" looks like.
+Their per-step values are in `data/reference/finished_runs_train_metrics.csv`: grad norm, clip ratio,
+response length, entropy, PPO clip fraction, KL and score.
+
+| metric | normal in the finished runs | red flag |
+|---|---|---|
+| `actor/grad_norm` | 0.06–0.41 at every step: median about 0.25 in steps 1–20 and 0.12 after. Gradient clipping is at 1.0 and was never reached. | above about 0.5 for several steps; near 1.0 (clipping is active); NaN or inf |
+| `response_length/clip_ratio` (share of rollouts cut off at 32k) | 83–94% at the start (the base model). It then fell fast: under 10% from step 7 (regular) or step 5 (mean-quantized). After step 20, median 2–5%, max 28% | after step 20, above about 30% for several steps, or a steady climb toward the cap |
+| `actor/pg_clipfrac`, `actor/ppo_kl` | exactly 0 at every step: one optimizer update per batch, so the PPO ratio is 1 | any nonzero value, which means the update setup changed |
+| `actor/kl_loss` | up to about 0.01 in steps 1–20, then 0.009–0.043 | a steady climb well above 0.05 |
+| `actor/entropy` | about 0.7 at the start; lowest 0.23–0.26 near step 40; back to about 0.5 by step 150 | falling toward 0 and staying there |
+
+**With dynamic sampling:**
+- **Clip ratio:** `response_length/*` and `critic/score/*` describe only the kept groups. The closest
+  match to the finished runs' clip ratio is `dynamic_sampling/clip_ratio_all`, over every generated
+  rollout. Check both.
+- **Check that dynamic sampling fixes the early steps.** In steps 1–20 of run 1, every step should
+  train on 16 informative groups (`dynamic_sampling/kept_informative` = 16, `kept_flat` = 0), unless the
+  6-batch cap is hit (`cap_hit` = 1).
+  - Compare grad norm and response length in those steps with the finished runs. In particular, check
+    whether the length still collapses the same way (about 30k to 5k tokens within 2–3 steps).
+- **After step 20:** frequent `kept_flat` > 0 or `cap_hit` = 1 means the schedule leaves few groups
+  with mixed labels. Steps slow down, and fewer of each batch's groups carry signal.
+- **New schedules:** a new schedule changes the advantages, so its grad norm may legitimately differ
+  somewhat from the finished runs. Report the difference. If it goes past the red flags, stop and ask.
+
 ## Monitoring
 
+- **Run health:** check the [Run health](#run-health) table after the first few steps, after step 20,
+  and then at least daily.
 - **Watch:** the run's log, its supervisor and its tmux session (there is no queue for these runs),
   the judge, and vLLM hangs (GPUs idle in the middle of generation).
 - **Finished or gave up:** the supervisor writes to `outputs/logs/<run>_supervisor.log`.
@@ -611,9 +657,9 @@ loss aggregation. It used an older setup (8 × 8 rollouts, 16k tokens).
 One row per run, in every phase, including screens and seed repeats. Each gap is against that baseline
 run, with its 95% CI, on the final window (screens: the {60, 80, 100} window).
 
-| run name | phase | schedule and settings | Avg@5 (window) | vs run 1 | vs run 4 | vs run 5 | rollouts generated | wall time | notes (restarts, judge outages) |
-|---|---|---|---|---|---|---|---|---|---|
-| (none yet) | | | | | | | | | |
+| run name | phase | schedule and settings | Avg@5 (window) | vs run 1 | vs run 4 | vs run 5 | rollouts generated | wall time | run health (grad norm, clip ratio) | notes (restarts, judge outages) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| (none yet) | | | | | | | | | | |
 
 ## Design notes
 
@@ -636,5 +682,8 @@ Also note variants that were dropped without a run, and why.
 - `scripts/launch_dynamic_sampling_grpo.sh`: the launcher for every run.
 - `verl/verl/experimental/agent_loop/single_turn_agent_loop.py`: vLLM `max_tokens` = response length (the 32k stop).
 - `analysis/`: earlier notes and simulations on continuous-reward advantages (background).
+- `data/reference/finished_runs_train_metrics.csv`: per-step training metrics of the two finished runs
+  (grad norm, clip ratio, response length, entropy, PPO clip fraction, KL, score), the reference for
+  [Run health](#run-health).
 - `data/reference/finished_runs_val_per_problem.csv`: per-problem validation scores of the two finished runs
   (every validation step), for paired comparisons on any machine.
